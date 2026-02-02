@@ -48,10 +48,15 @@ function processQueue() {
     console.log(`[Queue] Processing ${file.name}: rotation=${file.rotation}°, fixRotation=${options.fixRotation}`);
 
     processVideo(file.path, outputPath, { ...options, rotation: file.rotation }, (percent) => {
-      jobs[fileId].progress = Math.round(percent);
+      if (typeof percent !== 'number' || isNaN(percent)) return;
+      const p = Math.round(percent);
+      if (p % 10 === 0 && jobs[fileId].progress !== p) {
+        console.log(`[Queue] Job ${fileId} progress: ${p}%`);
+      }
+      jobs[fileId].progress = p;
     })
       .then(async () => {
-        console.log(`[Queue] Job ${fileId} completed.`);
+        console.log(`[Queue] Job ${fileId} completed successfully: ${file.name}`);
         jobs[fileId].status = 'completed';
         jobs[fileId].progress = 100;
 
@@ -237,18 +242,19 @@ app.post('/api/process', async (req, res) => {
   if (jobs[fileId]) return res.status(400).json({ error: 'Job already in progress or queued' });
 
   // Define output path
-  // Only add "fixed" if the extension stays the same (.mp4 -> .mp4)
-  // If extension changes (.mov -> .mp4), the extension change already distinguishes it
-  const ext = path.extname(file.path).toLowerCase();
-  const baseName = path.basename(file.path, ext);
+  const originalExt = path.extname(file.path);
+  // Case-insensitive removal of the extension
+  const baseName = path.basename(file.path).replace(new RegExp(`${originalExt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'), '');
   const outputExt = '.mp4';
 
   let outputFileName;
-  if (ext === '.mp4') {
-    // Same extension, add "fixed" to avoid overwriting original
+  // Use lowercase for comparison to determine if we need the .fixed suffix
+  const lowerExt = originalExt.toLowerCase();
+  if (lowerExt === '.mp4' || lowerExt === '.m4v') {
+    // Same or similar extension, add "fixed" to avoid overwriting original
     outputFileName = `${baseName}.fixed${outputExt}`;
   } else {
-    // Different extension, just change the extension
+    // Different extension (e.g., .mov -> .mp4), just change the extension
     outputFileName = `${baseName}${outputExt}`;
   }
 
@@ -284,6 +290,20 @@ app.post('/api/process', async (req, res) => {
  */
 app.get('/api/jobs', (req, res) => {
   res.json(Object.values(jobs));
+});
+
+/**
+ * GET /api/debug
+ * Returns internal state of the job queue for troubleshooting.
+ */
+app.get('/api/debug', (req, res) => {
+  res.json({
+    activeJobCount,
+    queueLength: queue.length,
+    queueSummary: queue.map(q => ({ id: q.fileId, name: q.file.name })),
+    scanResultsCount: scanResults.length,
+    jobsCount: Object.keys(jobs).length
+  });
 });
 
 app.listen(PORT, () => {
