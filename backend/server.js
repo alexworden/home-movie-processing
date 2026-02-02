@@ -28,6 +28,10 @@ let queue = [];
 let activeJobCount = 0;
 const MAX_CONCURRENT_JOBS = 3;
 
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const execPromise = promisify(exec);
+
 /**
  * Helper to process the next jobs in the queue.
  */
@@ -46,10 +50,37 @@ function processQueue() {
     processVideo(file.path, outputPath, { ...options, rotation: file.rotation }, (percent) => {
       jobs[fileId].progress = Math.round(percent);
     })
-      .then(() => {
+      .then(async () => {
         console.log(`[Queue] Job ${fileId} completed.`);
         jobs[fileId].status = 'completed';
         jobs[fileId].progress = 100;
+
+        // Archive logic for .mov files
+        if (file.extension.toLowerCase() === '.mov') {
+          try {
+            const fileDir = path.dirname(file.path);
+            const archiveDir = path.join(fileDir, 'archive');
+
+            // 1. Create archive directory if it doesn't exist
+            await fs.mkdir(archiveDir, { recursive: true });
+
+            // 2. Move original file to archive folder
+            const archivePath = path.join(archiveDir, file.name);
+
+            // Use system 'mv' for maximum safety and atomic operation where possible
+            console.log(`[Archive] Moving original file to archive: ${file.path} -> ${archivePath}`);
+
+            // Escaping paths for shell execution to handle spaces/special characters
+            const escapedSrc = `"${file.path.replace(/"/g, '\\"')}"`;
+            const escapedDest = `"${archivePath.replace(/"/g, '\\"')}"`;
+
+            await execPromise(`mv ${escapedSrc} ${escapedDest}`);
+            console.log(`[Archive] Successfully archived ${file.name}`);
+          } catch (archiveErr) {
+            console.error(`[Archive] Failed to archive ${file.name}:`, archiveErr.message);
+            // We don't mark the job as failed if archiving fails, as the processing was successful
+          }
+        }
       })
       .catch((err) => {
         console.error(`[Queue] Job ${fileId} failed:`, err.message);
