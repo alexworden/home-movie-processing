@@ -44,7 +44,7 @@ function App() {
   // Apply filter when showOnlyRecommended changes
   useEffect(() => {
     if (allFiles.length > 0) {
-      const filtered = showOnlyRecommended 
+      const filtered = showOnlyRecommended
         ? allFiles.filter(f => f.suggestRotation || f.suggestOptimization || f.suggestConversion)
         : allFiles;
       setFiles(filtered);
@@ -56,7 +56,7 @@ function App() {
 
   // Poll for job updates
   useEffect(() => {
-    const activeJobs = Object.values(jobs).some(j => j.status === 'processing');
+    const activeJobs = Object.values(jobs).some(j => j.status === 'processing' || j.status === 'queued');
     if (!activeJobs) return;
 
     const interval = setInterval(async () => {
@@ -89,7 +89,7 @@ function App() {
       const data = await res.json();
       setAllFiles(data); // Store all files
       // Apply filter if enabled
-      const filtered = showOnlyRecommended 
+      const filtered = showOnlyRecommended
         ? data.filter(f => f.suggestRotation || f.suggestOptimization || f.suggestConversion)
         : data;
       setFiles(filtered);
@@ -127,7 +127,7 @@ function App() {
   };
 
   const toggleAll = () => {
-    const selectable = files.filter(f => (f.suggestRotation || f.suggestOptimization || f.suggestConversion) && jobs[f.id]?.status !== 'processing' && jobs[f.id]?.status !== 'completed');
+    const selectable = files.filter(f => (f.suggestRotation || f.suggestOptimization || f.suggestConversion) && jobs[f.id]?.status !== 'processing' && jobs[f.id]?.status !== 'queued' && jobs[f.id]?.status !== 'completed');
     if (selectedFiles.size === selectable.length && selectable.length > 0) {
       setSelectedFiles(new Set());
     } else {
@@ -138,8 +138,8 @@ function App() {
   const handleBulkProcess = async () => {
     const toProcess = files.filter(f => selectedFiles.has(f.id));
     for (const file of toProcess) {
-      // Don't restart if already working
-      if (jobs[file.id]?.status === 'processing') continue;
+      // Don't restart if already working or queued
+      if (jobs[file.id]?.status === 'processing' || jobs[file.id]?.status === 'queued') continue;
 
       startProcess(file.id, {
         fixRotation: file.suggestRotation,
@@ -310,8 +310,9 @@ function App() {
             {files.map(file => {
               const job = jobs[file.id];
               const isProcessing = job?.status === 'processing';
+              const isQueued = job?.status === 'queued';
               const isCompleted = job?.status === 'completed';
-              const canSelect = (file.suggestRotation || file.suggestOptimization || file.suggestConversion) && !isProcessing && !isCompleted;
+              const canSelect = (file.suggestRotation || file.suggestOptimization || file.suggestConversion) && !isProcessing && !isQueued && !isCompleted;
 
               return (
                 <div key={file.id} className={`file-row ${selectedFiles.has(file.id) ? 'selected' : ''}`}>
@@ -347,6 +348,10 @@ function App() {
                     ) : isProcessing ? (
                       <div className="status-working">
                         <Loader2 className="animate-spin" size={18} /> {job.progress}%
+                      </div>
+                    ) : isQueued ? (
+                      <div className="status-working">
+                        <Loader2 className="animate-spin" size={18} /> Queued...
                       </div>
                     ) : (file.suggestRotation || file.suggestOptimization || file.suggestConversion) ? (
                       <button
