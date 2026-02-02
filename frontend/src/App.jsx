@@ -9,7 +9,6 @@ function App() {
   const [recursiveScan, setRecursiveScan] = useState(true); // Recursive scan option
   const [files, setFiles] = useState([]); // Analyzed files (after "Scan Now")
   const [allFiles, setAllFiles] = useState([]); // All files (before filtering)
-  const [showOnlyRecommended, setShowOnlyRecommended] = useState(false); // Filter toggle
   const [jobs, setJobs] = useState({});
   const [browseData, setBrowseData] = useState({ subdirs: [], files: [] }); // Folders and names for browsing
   const [browsingLoading, setBrowsingLoading] = useState(false);
@@ -41,18 +40,6 @@ function App() {
     fetchSubdirs(folderPath);
   }, []);
 
-  // Apply filter when showOnlyRecommended changes
-  useEffect(() => {
-    if (allFiles.length > 0) {
-      const filtered = showOnlyRecommended
-        ? allFiles.filter(f => f.suggestRotation || f.suggestOptimization)
-        : allFiles;
-      setFiles(filtered);
-      // Update selection to only include visible files
-      const visibleIds = new Set(filtered.map(f => f.id));
-      setSelectedFiles(prev => new Set([...prev].filter(id => visibleIds.has(id))));
-    }
-  }, [showOnlyRecommended, allFiles]);
 
   // Poll for job updates
   useEffect(() => {
@@ -88,11 +75,7 @@ function App() {
       }
       const data = await res.json();
       setAllFiles(data); // Store all files
-      // Apply filter if enabled (Priority: Rotation or Optimization > 100MB)
-      const filtered = showOnlyRecommended
-        ? data.filter(f => f.suggestRotation || f.suggestOptimization)
-        : data;
-      setFiles(filtered);
+      setFiles(data);
       // Auto-select files that truly need work (Rotation or Optimization)
       const needWork = data.filter(f => f.suggestRotation || f.suggestOptimization).map(f => f.id);
       setSelectedFiles(new Set(needWork));
@@ -285,21 +268,12 @@ function App() {
                 onChange={toggleAll}
                 className="header-checkbox"
               />
-              <h2>
-                Detailed Analysis ({files.length} {showOnlyRecommended ? 'recommended' : ''} of {allFiles.length} videos)
-              </h2>
+              <h2>Detailed Analysis ({files.length} videos)</h2>
             </div>
             <div className="results-actions">
-              <button
-                className={`secondary small ${showOnlyRecommended ? 'active' : ''}`}
-                onClick={() => setShowOnlyRecommended(!showOnlyRecommended)}
-                title={showOnlyRecommended ? 'Show all files' : 'Show only files that need processing'}
-              >
-                <Filter size={14} /> {showOnlyRecommended ? 'Show All' : 'Show Recommended'}
-              </button>
               {selectedFiles.size > 0 && (
                 <button className="btn-primary-glow small" onClick={handleBulkProcess}>
-                  <Play size={12} fill="white" /> Process {selectedFiles.size} Selected
+                  <Play size={12} fill="white" stroke="white" /> Process {selectedFiles.size} Selected
                 </button>
               )}
               <button className="secondary small" onClick={() => { setAllFiles([]); setFiles([]); setSelectedFiles(new Set()); }}>Dismiss</button>
