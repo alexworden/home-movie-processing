@@ -113,21 +113,21 @@ app.get('/api/scan', async (req, res) => {
         try {
           const meta = await probeVideo(file.path);
 
-          // Suggestions logic (prioritizing .mov files that need rotation):
-          // 1. If rotation is detected (iPhone compatible metadata) - HIGHEST PRIORITY
-          // 2. If it's a MOV file over 100MB (optimization)
-          // 3. If it's a MOV file (suggest conversion to MP4 for better compatibility)
+          // Suggestions logic:
+          // 1. Rotation detected - HIGH PRIORITY
+          // 2. Large MOV file (>100MB) - Optimization suggested
+          // 3. MOV file (general compatibility) - But we'll only "recommend" (auto-select) 
+          //    if it meets priority criteria.
           const needsRotation = meta.rotation !== 0;
           const isLargeMOV = file.extension === '.mov' && file.size > 100 * 1024 * 1024;
           const isMOV = file.extension === '.mov';
-          const isMOVNeedingRotation = isMOV && needsRotation; // Priority: .mov files with rotation
 
           return {
             ...file,
             ...meta,
             suggestRotation: needsRotation,
             suggestOptimization: isLargeMOV,
-            suggestConversion: isMOV, // Suggest converting MOV to MP4 for better compatibility
+            suggestConversion: isMOV,
             status: 'idle'
           };
         } catch (err) {

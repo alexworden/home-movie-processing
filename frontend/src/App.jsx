@@ -45,7 +45,7 @@ function App() {
   useEffect(() => {
     if (allFiles.length > 0) {
       const filtered = showOnlyRecommended
-        ? allFiles.filter(f => f.suggestRotation || f.suggestOptimization || f.suggestConversion)
+        ? allFiles.filter(f => f.suggestRotation || f.suggestOptimization)
         : allFiles;
       setFiles(filtered);
       // Update selection to only include visible files
@@ -88,13 +88,15 @@ function App() {
       }
       const data = await res.json();
       setAllFiles(data); // Store all files
-      // Apply filter if enabled
+      // Apply filter if enabled (Priority: Rotation or Optimization > 100MB)
       const filtered = showOnlyRecommended
-        ? data.filter(f => f.suggestRotation || f.suggestOptimization || f.suggestConversion)
+        ? data.filter(f => f.suggestRotation || f.suggestOptimization)
         : data;
       setFiles(filtered);
-      // Auto-select files that need work
-      const needWork = filtered.filter(f => f.suggestRotation || f.suggestOptimization || f.suggestConversion).map(f => f.id);
+      // Auto-select files that need work (Rotation or Optimization)
+      // We exclude 'suggestConversion' if it doesn't also need one of the above, 
+      // as every .mov file is recommended for conversion.
+      const needWork = filtered.filter(f => f.suggestRotation || f.suggestOptimization).map(f => f.id);
       setSelectedFiles(new Set(needWork));
     } catch (err) {
       alert('Error: ' + err.message);
@@ -127,7 +129,7 @@ function App() {
   };
 
   const toggleAll = () => {
-    const selectable = files.filter(f => (f.suggestRotation || f.suggestOptimization || f.suggestConversion) && jobs[f.id]?.status !== 'processing' && jobs[f.id]?.status !== 'queued' && jobs[f.id]?.status !== 'completed');
+    const selectable = files.filter(f => (f.suggestRotation || f.suggestOptimization) && jobs[f.id]?.status !== 'processing' && jobs[f.id]?.status !== 'queued' && jobs[f.id]?.status !== 'completed');
     if (selectedFiles.size === selectable.length && selectable.length > 0) {
       setSelectedFiles(new Set());
     } else {
@@ -281,7 +283,7 @@ function App() {
             <div className="results-title-group">
               <input
                 type="checkbox"
-                checked={selectedFiles.size > 0 && selectedFiles.size === files.filter(f => (f.suggestRotation || f.suggestOptimization || f.suggestConversion) && jobs[f.id]?.status !== 'processing' && jobs[f.id]?.status !== 'completed').length}
+                checked={selectedFiles.size > 0 && selectedFiles.size === files.filter(f => (f.suggestRotation || f.suggestOptimization) && jobs[f.id]?.status !== 'processing' && jobs[f.id]?.status !== 'queued' && jobs[f.id]?.status !== 'completed').length}
                 onChange={toggleAll}
                 className="header-checkbox"
               />
@@ -312,7 +314,8 @@ function App() {
               const isProcessing = job?.status === 'processing';
               const isQueued = job?.status === 'queued';
               const isCompleted = job?.status === 'completed';
-              const canSelect = (file.suggestRotation || file.suggestOptimization || file.suggestConversion) && !isProcessing && !isQueued && !isCompleted;
+              const isPriority = file.suggestRotation || file.suggestOptimization;
+              const canSelect = isPriority && !isProcessing && !isQueued && !isCompleted;
 
               return (
                 <div key={file.id} className={`file-row ${selectedFiles.has(file.id) ? 'selected' : ''}`}>
