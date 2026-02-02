@@ -10,7 +10,7 @@ const cors = require('cors');
 const morgan = require('morgan');
 const path = require('path');
 const fs = require('fs/promises');
-const { scanDirectory, probeVideo, processVideo, listContent } = require('./processor');
+const { scanDirectory, probeVideo, processVideo, listContent, ARCHIVE_DIR } = require('./processor');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -59,7 +59,7 @@ function processQueue() {
         if (file.extension.toLowerCase() === '.mov') {
           try {
             const fileDir = path.dirname(file.path);
-            const archiveDir = path.join(fileDir, 'archive');
+            const archiveDir = path.join(fileDir, ARCHIVE_DIR);
 
             // 1. Create archive directory if it doesn't exist
             await fs.mkdir(archiveDir, { recursive: true });

@@ -13,6 +13,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.m4v']);
+const ARCHIVE_DIR = 'archive';
 
 /**
  * Scans a directory for video files, optionally recursively.
@@ -28,6 +29,9 @@ async function scanDirectory(dir, root = dir, recursive = true) {
     for (const file of list) {
         const fullPath = path.join(dir, file.name);
         if (file.isDirectory()) {
+            // Omit archive directories and hidden directories
+            if (file.name === ARCHIVE_DIR || file.name.startsWith('.')) continue;
+
             // Recurse into subdirectories only if recursive is true
             if (recursive) {
                 const inner = await scanDirectory(fullPath, root, recursive);
@@ -60,21 +64,21 @@ async function scanDirectory(dir, root = dir, recursive = true) {
  */
 function parseRotationFromMatrix(matrix) {
     if (!matrix || matrix.length !== 9) return 0;
-    
+
     // Common rotation matrices:
     // 90° clockwise:   [0,1,0,-1,0,0,0,0,1]
     // 180°:           [-1,0,0,0,-1,0,0,0,1]
     // 270° clockwise:  [0,-1,0,1,0,0,0,0,1]
-    
+
     const [a, b, c, d, e, f, g, h, i] = matrix;
-    
+
     // 90° clockwise
     if (a === 0 && b === 1 && d === -1 && e === 0) return 90;
     // 180°
     if (a === -1 && e === -1 && b === 0 && d === 0) return 180;
     // 270° clockwise (or -90°)
     if (a === 0 && b === -1 && d === 1 && e === 0) return 270;
-    
+
     return 0;
 }
 
@@ -205,7 +209,7 @@ function probeVideo(filePath) {
 function processVideo(inputPath, outputPath, options, onProgress) {
     return new Promise((resolve, reject) => {
         let command = ffmpeg(inputPath);
-        
+
         // Disable FFmpeg's auto-rotation so we have full control.
         // We want to manually apply rotation and remove metadata for maximum compatibility.
         command.inputOptions('-noautorotate');
@@ -221,12 +225,12 @@ function processVideo(inputPath, outputPath, options, onProgress) {
             } else if (options.rotation === 270) {
                 filter = 'transpose=2'; // Rotate 90° counter-clockwise = 270° clockwise
             }
-            
+
             // CRITICAL: Remove rotation side data using the sidedata filter
             // This must be done AFTER transpose so the rotation is applied first, then side data is stripped
             // mode=delete (1) removes side data, type=DISPLAYMATRIX (6) targets rotation metadata
             filter += ',sidedata=mode=delete:type=6'; // Delete DISPLAYMATRIX side data (which contains rotation)
-            
+
             console.log(`Applying rotation fix: ${options.rotation}° clockwise using filter: ${filter}`);
             command.videoFilters(filter);
 
@@ -237,7 +241,7 @@ function processVideo(inputPath, outputPath, options, onProgress) {
         } else if (options.fixRotation) {
             console.log('Warning: fixRotation requested but rotation is 0 - no rotation applied');
         }
-        
+
         // If converting (e.g., MOV to MP4) without rotation, still remove rotation metadata if present
         // This ensures the output file has no rotation metadata for better compatibility
         if (options.convert && !options.fixRotation && options.rotation !== 0) {
@@ -279,7 +283,7 @@ function processVideo(inputPath, outputPath, options, onProgress) {
 async function listContent(dir) {
     const list = await fs.readdir(dir, { withFileTypes: true });
     const subdirs = list
-        .filter(item => item.isDirectory() && !item.name.startsWith('.'))
+        .filter(item => item.isDirectory() && !item.name.startsWith('.') && item.name !== ARCHIVE_DIR)
         .map(item => ({
             name: item.name,
             path: path.join(dir, item.name)
@@ -304,5 +308,6 @@ module.exports = {
     scanDirectory,
     probeVideo,
     processVideo,
-    listContent
+    listContent,
+    ARCHIVE_DIR
 };
