@@ -1,0 +1,10 @@
+{
+  "watch": ["server.js", "processor.js"],
+  "ext": "js,json",
+  "ignore": ["node_modules", "*.log", "*.mp4", "*.mov", "*.m4v"],
+  "exec": "node server.js",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "verbose": true
+}
