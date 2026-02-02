@@ -9,7 +9,7 @@ function App() {
   const [recursiveScan, setRecursiveScan] = useState(true); // Recursive scan option
   const [files, setFiles] = useState([]); // Analyzed files (after "Scan Now")
   const [allFiles, setAllFiles] = useState([]); // All files (before filtering)
-  const [showOnlyRecommended, setShowOnlyRecommended] = useState(true); // Filter toggle
+  const [showOnlyRecommended, setShowOnlyRecommended] = useState(false); // Filter toggle
   const [jobs, setJobs] = useState({});
   const [browseData, setBrowseData] = useState({ subdirs: [], files: [] }); // Folders and names for browsing
   const [browsingLoading, setBrowsingLoading] = useState(false);
@@ -93,10 +93,8 @@ function App() {
         ? data.filter(f => f.suggestRotation || f.suggestOptimization)
         : data;
       setFiles(filtered);
-      // Auto-select files that need work (Rotation or Optimization)
-      // We exclude 'suggestConversion' if it doesn't also need one of the above, 
-      // as every .mov file is recommended for conversion.
-      const needWork = filtered.filter(f => f.suggestRotation || f.suggestOptimization).map(f => f.id);
+      // Auto-select files that truly need work (Rotation or Optimization)
+      const needWork = data.filter(f => f.suggestRotation || f.suggestOptimization).map(f => f.id);
       setSelectedFiles(new Set(needWork));
     } catch (err) {
       alert('Error: ' + err.message);
@@ -129,7 +127,7 @@ function App() {
   };
 
   const toggleAll = () => {
-    const selectable = files.filter(f => (f.suggestRotation || f.suggestOptimization) && jobs[f.id]?.status !== 'processing' && jobs[f.id]?.status !== 'queued' && jobs[f.id]?.status !== 'completed');
+    const selectable = files.filter(f => jobs[f.id]?.status !== 'processing' && jobs[f.id]?.status !== 'queued' && jobs[f.id]?.status !== 'completed');
     if (selectedFiles.size === selectable.length && selectable.length > 0) {
       setSelectedFiles(new Set());
     } else {
@@ -283,7 +281,7 @@ function App() {
             <div className="results-title-group">
               <input
                 type="checkbox"
-                checked={selectedFiles.size > 0 && selectedFiles.size === files.filter(f => (f.suggestRotation || f.suggestOptimization) && jobs[f.id]?.status !== 'processing' && jobs[f.id]?.status !== 'queued' && jobs[f.id]?.status !== 'completed').length}
+                checked={selectedFiles.size > 0 && selectedFiles.size === files.filter(f => jobs[f.id]?.status !== 'processing' && jobs[f.id]?.status !== 'queued' && jobs[f.id]?.status !== 'completed').length}
                 onChange={toggleAll}
                 className="header-checkbox"
               />
@@ -315,7 +313,7 @@ function App() {
               const isQueued = job?.status === 'queued';
               const isCompleted = job?.status === 'completed';
               const isPriority = file.suggestRotation || file.suggestOptimization;
-              const canSelect = isPriority && !isProcessing && !isQueued && !isCompleted;
+              const canSelect = !isProcessing && !isQueued && !isCompleted;
 
               return (
                 <div key={file.id} className={`file-row ${selectedFiles.has(file.id) ? 'selected' : ''}`}>
