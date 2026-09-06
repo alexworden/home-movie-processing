@@ -48,15 +48,10 @@ function processQueue() {
     console.log(`[Queue] Processing ${file.name}: rotation=${file.rotation}°, fixRotation=${options.fixRotation}`);
 
     processVideo(file.path, outputPath, { ...options, rotation: file.rotation }, (percent) => {
-      if (typeof percent !== 'number' || isNaN(percent)) return;
-      const p = Math.round(percent);
-      if (p % 10 === 0 && jobs[fileId].progress !== p) {
-        console.log(`[Queue] Job ${fileId} progress: ${p}%`);
-      }
-      jobs[fileId].progress = p;
+      jobs[fileId].progress = Math.round(percent);
     })
       .then(async () => {
-        console.log(`[Queue] Job ${fileId} completed successfully: ${file.name}`);
+        console.log(`[Queue] Job ${fileId} completed: ${file.name}`);
         jobs[fileId].status = 'completed';
         jobs[fileId].progress = 100;
 
@@ -290,20 +285,6 @@ app.post('/api/process', async (req, res) => {
  */
 app.get('/api/jobs', (req, res) => {
   res.json(Object.values(jobs));
-});
-
-/**
- * GET /api/debug
- * Returns internal state of the job queue for troubleshooting.
- */
-app.get('/api/debug', (req, res) => {
-  res.json({
-    activeJobCount,
-    queueLength: queue.length,
-    queueSummary: queue.map(q => ({ id: q.fileId, name: q.file.name })),
-    scanResultsCount: scanResults.length,
-    jobsCount: Object.keys(jobs).length
-  });
 });
 
 app.listen(PORT, () => {
