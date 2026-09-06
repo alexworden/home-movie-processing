@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle, Loader2, Folder, X, Home, ArrowUp, Video, ChevronUp, ChevronDown, Star, Play } from 'lucide-react';
+import { CheckCircle, Loader2, Folder, X, Home, ArrowUp, Video, ChevronUp, ChevronDown, Star, Play, Pencil } from 'lucide-react';
 
 const API_BASE = 'http://localhost:3001/api';
 const FAVORITES_KEY = 'vidorient.favorites';
+const LAST_FOLDER_KEY = 'vidorient.lastFolder';
 const VOLUMES_PATH = '/Volumes';
 const TYPE_FILTERS = [
   { id: 'all', label: 'All' },
@@ -176,6 +177,25 @@ function saveCustomFavorites(list) {
   localStorage.setItem(FAVORITES_KEY, JSON.stringify(list));
 }
 
+function loadLastFolder() {
+  try {
+    const n = normalizeFolderPath(localStorage.getItem(LAST_FOLDER_KEY) || '');
+    return n || VOLUMES_PATH;
+  } catch {
+    return VOLUMES_PATH;
+  }
+}
+
+function saveLastFolder(folder) {
+  const n = normalizeFolderPath(folder);
+  if (!n) return;
+  try {
+    localStorage.setItem(LAST_FOLDER_KEY, n);
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
 function SortHeader({ label, column, sortKey, sortDir, onSort }) {
   const active = sortKey === column;
   return (
@@ -206,6 +226,116 @@ function rowCanProcess(file, jobs) {
   if (status === 'failed') return true;
   if (file.canProcess != null) return !!file.canProcess;
   return !!(file.suggestRotation || file.suggestOptimization || file.suggestConversion);
+}
+
+function listingTitle(file) {
+  const converted = (file.members || []).find((m) => m.role === 'converted');
+  return file.displayName || converted?.name || file.convertedName || file.originalName || file.name;
+}
+
+function nameStem(name) {
+  if (!name) return '';
+  const i = String(name).lastIndexOf('.');
+  return i > 0 ? String(name).slice(0, i) : String(name);
+}
+
+function listingExtension(file) {
+  const title = listingTitle(file);
+  const fromTitle = title.includes('.') ? title.slice(title.lastIndexOf('.')) : '';
+  let fromField = file.extension ? String(file.extension) : '';
+  if (fromField && !fromField.startsWith('.')) fromField = `.${fromField}`;
+  return (fromTitle || fromField || '').toLowerCase();
+}
+
+function basenameOf(p) {
+  if (!p) return '';
+  const n = String(p).replace(/\\/g, '/');
+  const i = n.lastIndexOf('/');
+  return i >= 0 ? n.slice(i + 1) : n;
+}
+
+function applyMovedPath(current, moves) {
+  if (!current || !Array.isArray(moves)) return current;
+  const hit = moves.find((mv) => mv.from === current);
+  return hit ? hit.to : current;
+}
+
+function sameListingRow(entry, file) {
+  if (file.storeDir && file.recordKey && entry.storeDir && entry.recordKey) {
+    return file.storeDir === entry.storeDir && file.recordKey === entry.recordKey;
+  }
+  return rowKey(entry) === rowKey(file);
+}
+
+function applyRenameToEntry(entry, file, result) {
+  if (!sameListingRow(entry, file)) return entry;
+  const moves = result.moves || [];
+  const members = (entry.members || []).map((m) => {
+    const path = applyMovedPath(m.path, moves);
+    return path === m.path ? m : { ...m, path, name: basenameOf(path) };
+  });
+  const converted = members.find((m) => m.role === 'converted');
+  const original = members.find((m) => m.role === 'original');
+  const displayName = result.displayName || converted?.name || original?.name || entry.displayName;
+  return {
+    ...entry,
+    members,
+    displayName,
+    name: displayName,
+    capturedName: result.capturedName || entry.capturedName,
+    originalName: result.originalName || entry.originalName,
+    convertedName: result.convertedName || converted?.name || entry.convertedName,
+    convertedPath: applyMovedPath(entry.convertedPath, moves) || result.convertedPath || entry.convertedPath,
+    originalPath: applyMovedPath(entry.originalPath, moves) || result.originalPath || entry.originalPath,
+    archivePath: applyMovedPath(entry.archivePath, moves) || result.archivePath || entry.archivePath,
+    path: applyMovedPath(entry.path, moves)
+  };
+}
+
+function FileRenameField({ value, extension, onChange, onSubmit, onCancel }) {
+  const inputRef = useRef(null);
+  const skipBlurRef = useRef(false);
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, []);
+  return (
+    <span
+      className="name-line name-rename-wrap"
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <input
+        ref={inputRef}
+        className="name-rename-input"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            onSubmit(e.currentTarget.value);
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            skipBlurRef.current = true;
+            onCancel();
+          }
+        }}
+        onBlur={(e) => {
+          if (skipBlurRef.current) return;
+          onSubmit(e.currentTarget.value);
+        }}
+        aria-label="New file name"
+      />
+      {extension ? (
+        <span className="name-rename-ext" title="The file extension is kept">
+          {extension}
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 function hasConvertedCopy(file) {
@@ -300,7 +430,7 @@ function ActionMenu({ disabled, options, onAction }) {
 }
 
 function App() {
-  const [folderPath, setFolderPath] = useState('/Volumes/Home Movies/Lori Movies');
+  const [folderPath, setFolderPath] = useState(loadLastFolder);
   const [recursiveScan, setRecursiveScan] = useState(false);
   const [jobs, setJobs] = useState({});
   const [browseData, setBrowseData] = useState({ subdirs: [], files: [], groups: [] });
@@ -315,6 +445,9 @@ function App() {
   const [customFavorites, setCustomFavorites] = useState(loadCustomFavorites);
   const [failedThumbs, setFailedThumbs] = useState(() => new Set());
   const [fileRoleMenuId, setFileRoleMenuId] = useState(null);
+  const [listOrderKeys, setListOrderKeys] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
+  const renameBusyRef = useRef(false);
   const inputRef = useRef(null);
   const abortRef = useRef(null);
   const openSeqRef = useRef(0);
@@ -349,6 +482,7 @@ function App() {
       return;
     }
     cancelOpenFolder();
+    setListOrderKeys(null);
     const seq = openSeqRef.current;
     const ac = new AbortController();
     abortRef.current = ac;
@@ -365,14 +499,23 @@ function App() {
       if (seq !== openSeqRef.current) return;
       if (!browseRes.ok) {
         setBrowseData({ subdirs: [], files: [], groups: [] });
+        if (normalizeFolderPath(path) !== VOLUMES_PATH) {
+          setFolderPath(VOLUMES_PATH);
+          openFolder(VOLUMES_PATH);
+        }
         return;
       }
       const data = await browseRes.json();
       if (seq !== openSeqRef.current) return;
+      const resolved = normalizeFolderPath(data.current || path);
+      setFolderPath(resolved);
+      saveLastFolder(resolved);
       setBrowseData({ subdirs: data.subdirs || [], files: data.files || [], groups: data.groups || [] });
       setBrowsingLoading(false);
 
-      const paths = (data.files || []).map((file) => file.path);
+      const paths = (data.files || [])
+        .filter((file) => force || !file.analyzed)
+        .map((file) => file.path);
       if (paths.length < 1) {
         setScanning(false);
         return;
@@ -552,8 +695,8 @@ function App() {
     const listedFiles = (browseData.groups && browseData.groups.length ? browseData.groups : browseData.files)
       .map((file) => ({
         ...file,
-        typeLabel: fileTypeFromName(file.name, file.extension),
-        relativeFolder: relativeFolder(file.relativePath || file.originalName, file.name, file.path, folderPath)
+        typeLabel: fileTypeFromName(listingTitle(file), file.extension),
+        relativeFolder: relativeFolder(file.relativePath || file.originalName, listingTitle(file), file.path, folderPath)
       }))
       .filter((file) => {
         if (!matchesTypeFilter(file.typeLabel, browseTypeFilter)) return false;
@@ -563,17 +706,23 @@ function App() {
         return true;
       })
       .sort((a, b) => {
+        if (listOrderKeys) {
+          const rank = new Map(listOrderKeys.map((k, i) => [k, i]));
+          const ia = rank.has(rowKey(a)) ? rank.get(rowKey(a)) : Number.MAX_SAFE_INTEGER;
+          const ib = rank.has(rowKey(b)) ? rank.get(rowKey(b)) : Number.MAX_SAFE_INTEGER;
+          if (ia !== ib) return ia - ib;
+        }
         if (browseSort.key === 'name') {
           return compareValues(
-            `${a.relativeFolder}/${a.name}`.toLowerCase(),
-            `${b.relativeFolder}/${b.name}`.toLowerCase(),
+            `${a.relativeFolder}/${listingTitle(a)}`.toLowerCase(),
+            `${b.relativeFolder}/${listingTitle(b)}`.toLowerCase(),
             browseSort.dir
           );
         }
-        return sortByKey(a.name, b.name, a.typeLabel, b.typeLabel, a.size || 0, b.size || 0, browseSort.key, browseSort.dir);
+        return sortByKey(listingTitle(a), listingTitle(b), a.typeLabel, b.typeLabel, a.size || 0, b.size || 0, browseSort.key, browseSort.dir);
       });
     return { folders, files: listedFiles };
-  }, [browseData, browseTypeFilter, browseNeedFilter, browseSort, folderPath]);
+  }, [browseData, browseTypeFilter, browseNeedFilter, browseSort, folderPath, listOrderKeys]);
 
   const allBrowseFilesSelected = browseRows.files.length > 0 && browseRows.files.every((f) => browseSelected.has(rowKey(f)));
 
@@ -680,6 +829,43 @@ function App() {
       }
       openFolder(folderPath);
       if (errors.length) alert(errors.join('\n'));
+    }
+  };
+
+  const beginRename = (file, key) => {
+    setRenamingKey(key);
+    setRenameValue(nameStem(listingTitle(file)));
+  };
+
+  const submitRename = async (file, typed) => {
+    if (renameBusyRef.current) return;
+    const next = String(typed ?? renameValue).trim();
+    const current = nameStem(listingTitle(file));
+    setRenamingKey(null);
+    if (!next || next === current) return;
+    const folder = file.storeDir || (file.path ? file.path.slice(0, file.path.lastIndexOf('/')) : folderPath);
+    const recordKey = file.recordKey || file.originalName || file.name;
+    renameBusyRef.current = true;
+    try {
+      const result = await postJson(`${API_BASE}/rename`, {
+        folder,
+        recordKey,
+        name: next,
+        fileId: file.id,
+        currentName: file.originalName || file.name,
+        path: file.convertedPath || file.path,
+        members: file.members || []
+      });
+      setListOrderKeys((prev) => prev || browseRows.files.map((row) => rowKey(row)));
+      setBrowseData((prev) => ({
+        ...prev,
+        groups: (prev.groups || []).map((entry) => applyRenameToEntry(entry, file, result)),
+        files: (prev.files || []).map((entry) => applyRenameToEntry(entry, file, result))
+      }));
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      renameBusyRef.current = false;
     }
   };
 
@@ -884,9 +1070,9 @@ function App() {
               )}
             </span>
             <span className="col-icon" />
-            <SortHeader label="Name" column="name" sortKey={browseSort.key} sortDir={browseSort.dir} onSort={(col) => setBrowseSort((s) => cycleSort(s, col))} />
-            <SortHeader label="Type" column="type" sortKey={browseSort.key} sortDir={browseSort.dir} onSort={(col) => setBrowseSort((s) => cycleSort(s, col))} />
-            <SortHeader label="Size" column="size" sortKey={browseSort.key} sortDir={browseSort.dir} onSort={(col) => setBrowseSort((s) => cycleSort(s, col))} />
+            <SortHeader label="Name" column="name" sortKey={browseSort.key} sortDir={browseSort.dir} onSort={(col) => { setListOrderKeys(null); setBrowseSort((s) => cycleSort(s, col)); }} />
+            <SortHeader label="Type" column="type" sortKey={browseSort.key} sortDir={browseSort.dir} onSort={(col) => { setListOrderKeys(null); setBrowseSort((s) => cycleSort(s, col)); }} />
+            <SortHeader label="Size" column="size" sortKey={browseSort.key} sortDir={browseSort.dir} onSort={(col) => { setListOrderKeys(null); setBrowseSort((s) => cycleSort(s, col)); }} />
             <span className="col-actions-label">Status</span>
           </div>
           <div className="browser-scroll">
@@ -952,7 +1138,37 @@ function App() {
                     </span>
                       <span className="name">
                         {file.relativeFolder ? <span className="file-relpath">{file.relativeFolder}/</span> : null}
-                        <span className="name-file">{file.originalName || file.name}</span>
+                        {renamingKey === key ? (
+                          <FileRenameField
+                            value={renameValue}
+                            extension={listingExtension(file)}
+                            onChange={setRenameValue}
+                            onSubmit={(typed) => submitRename(file, typed)}
+                            onCancel={() => setRenamingKey(null)}
+                          />
+                        ) : (
+                          <span className="name-line">
+                            <span className="name-file">{listingTitle(file)}</span>
+                            <button
+                              type="button"
+                              className="name-rename"
+                              aria-label="Rename"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                              }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                beginRename(file, key);
+                              }}
+                            >
+                              <Pencil size={14} />
+                            </button>
+                          </span>
+                        )}
+                        {file.capturedName && nameStem(file.capturedName) !== nameStem(listingTitle(file)) ? (
+                          <span className="name-captured">Original: {file.capturedName}</span>
+                        ) : null}
                         <span className="file-meta-inline">
                           {file.width && file.height ? <span>{file.width}×{file.height}</span> : null}
                           {file.suggestConversion && !file.suggestOptimization && !file.convertedPresent && <span className="tag tag-convert">Convert to MP4</span>}
