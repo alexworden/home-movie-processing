@@ -50,8 +50,8 @@ function findRecordKey(store, file) {
   if (name && records[name]) return name;
   for (const [key, rec] of Object.entries(records)) {
     if (rec.originalPath === p || rec.convertedPath === p || rec.archivePath === p) return key;
-    if (rec.originalName === name || rec.convertedName === name) return key;
-    if (stem(rec.originalName) === stem(name) || stem(rec.convertedName) === stem(name)) return key;
+    if (rec.originalName === name || rec.convertedName === name || rec.capturedName === name || rec.displayName === name) return key;
+    if (stem(rec.originalName) === stem(name) || stem(rec.convertedName) === stem(name) || stem(rec.capturedName) === stem(name) || stem(rec.displayName) === stem(name)) return key;
   }
   return null;
 }
@@ -129,6 +129,8 @@ function recordFromProbe(file) {
   return {
     id: existingId || crypto.randomUUID(),
     name: file.name,
+    capturedName: file.capturedName || file.name,
+    displayName: file.displayName || file.name,
     originalName: file.name,
     originalPath: file.path,
     originalSize: file.size,
@@ -160,6 +162,7 @@ function upsertProbedFiles(store, probedFiles) {
     if (probingConverted) {
       store.records[key] = {
         ...prev,
+        capturedName: prev.capturedName || prev.originalName || file.name,
         convertedPath: file.path,
         convertedName: file.name,
         convertedSize: file.size ?? prev.convertedSize,
@@ -171,6 +174,8 @@ function upsertProbedFiles(store, probedFiles) {
     store.records[key] = {
       ...prev,
       ...next,
+      capturedName: prev.capturedName || next.capturedName,
+      displayName: prev.displayName || next.displayName,
       originalSize: next.originalSize ?? prev.originalSize,
       convertedName: prev.convertedName || null,
       convertedPath: prev.convertedPath || null,
@@ -200,6 +205,7 @@ async function markProcessed(dir, originalFile, outputPath) {
   const archived = proposedArchive && await fileExists(proposedArchive) ? proposedArchive : null;
   store.records[key] = {
     ...rec,
+    capturedName: rec.capturedName || rec.originalName || originalFile.name,
     originalSize: rec.originalSize ?? originalFile.size ?? null,
     convertedName: path.basename(outputPath),
     convertedPath: outputPath,
@@ -209,6 +215,171 @@ async function markProcessed(dir, originalFile, outputPath) {
   };
   await writeScanStore(dir, store);
   return store.records[key];
+}
+
+const VIDEO_RENAME_EXTS = new Set(['.mov', '.mp4', '.m4v']);
+
+function cleanRenameBase(raw) {
+  let s = String(raw || '').trim();
+  if (!s) {
+    const err = new Error('Name is required');
+    err.status = 400;
+    throw err;
+  }
+  s = s.replace(/\\/g, '/');
+  if (s.includes('/') || s.includes('\0')) {
+    const err = new Error('Name cannot contain a path');
+    err.status = 400;
+    throw err;
+  }
+  s = path.basename(s);
+  const ext = path.extname(s).toLowerCase();
+  if (VIDEO_RENAME_EXTS.has(ext)) s = s.slice(0, -ext.length).trim();
+  if (!s || s === '.' || s === '..') {
+    const err = new Error('Name is not valid');
+    err.status = 400;
+    throw err;
+  }
+  if (s.length > 180) {
+    const err = new Error('Name is too long');
+    err.status = 400;
+    throw err;
+  }
+  return s;
+}
+
+async function planMove(fromPath, newBase) {
+  if (!fromPath || !(await fileExists(fromPath))) return null;
+  const dest = path.join(path.dirname(fromPath), newBase + path.extname(fromPath));
+  if (path.resolve(fromPath) === path.resolve(dest)) return null;
+  if (await fileExists(dest)) {
+    const err = new Error(`A file already exists named ${path.basename(dest)}`);
+    err.status = 409;
+    throw err;
+  }
+  return { from: fromPath, to: dest };
+}
+
+async function renameThumbForVideo(dir, fromPath, toPath) {
+  const fromThumb = thumbnailAbs(dir, path.basename(fromPath));
+  const toThumb = thumbnailAbs(dir, path.basename(toPath));
+  if (!(await fileExists(fromThumb))) return null;
+  if (path.resolve(fromThumb) === path.resolve(toThumb)) return thumbnailRel(path.basename(toPath));
+  if (await fileExists(toThumb)) return thumbnailRel(path.basename(toPath));
+  await fs.rename(fromThumb, toThumb);
+  return thumbnailRel(path.basename(toPath));
+}
+
+async function renameRecordFiles(dir, recordKey, rawName, hint) {
+  const newBase = cleanRenameBase(rawName);
+  const store = await readScanStore(dir);
+  let found = getRecord(store, recordKey);
+  if (!found && hint?.name) found = getRecord(store, hint.name);
+  if (!found && hint?.path) {
+    const fake = { name: path.basename(hint.path), path: hint.path };
+    const key = findRecordKey(store, fake);
+    if (key) found = { key, rec: store.records[key] };
+  }
+
+  let rec;
+  let key;
+  if (found) {
+    key = found.key;
+    rec = found.rec;
+  } else {
+    const seedName = hint?.name || recordKey;
+    const seedPath = hint?.path || path.join(dir, seedName);
+    rec = recordFromProbe({
+      name: seedName,
+      path: seedPath,
+      size: hint?.size,
+      extension: path.extname(seedName)
+    });
+    key = seedName;
+    store.records[key] = rec;
+  }
+
+  rec.capturedName = rec.capturedName || rec.originalName || rec.name || hint?.name;
+
+  const convertedMove = await planMove(rec.convertedPath, newBase);
+  const originalInFolder = rec.originalPath && !String(rec.originalPath).includes(`${path.sep}archive${path.sep}`)
+    ? await planMove(rec.originalPath, newBase)
+    : null;
+  const archiveMove = await planMove(rec.archivePath, newBase);
+  const extraMoves = [];
+  const hintPathMove = await planMove(hint?.path, newBase);
+  if (hint?.members) {
+    for (const m of hint.members) {
+      if (!m?.path) continue;
+      const extra = await planMove(m.path, newBase);
+      if (extra) extraMoves.push(extra);
+    }
+  }
+
+  const planned = [];
+  const seenFrom = new Set();
+  for (const mv of [convertedMove, originalInFolder, archiveMove, hintPathMove, ...extraMoves]) {
+    if (!mv) continue;
+    const id = path.resolve(mv.from);
+    if (seenFrom.has(id)) continue;
+    seenFrom.add(id);
+    planned.push(mv);
+  }
+  if (!planned.length) {
+    const err = new Error('Nothing to rename');
+    err.status = 404;
+    throw err;
+  }
+
+  const done = [];
+  try {
+    for (const mv of planned) {
+      await fs.rename(mv.from, mv.to);
+      done.push(mv);
+    }
+  } catch (err) {
+    for (const mv of done.reverse()) {
+      await fs.rename(mv.to, mv.from).catch(() => {});
+    }
+    throw err;
+  }
+
+  const applyPath = (current, mv) => {
+    if (!current || !mv) return current;
+    if (path.resolve(current) === path.resolve(mv.from) || path.resolve(current) === path.resolve(mv.to)) return mv.to;
+    return current;
+  };
+
+  for (const mv of planned) {
+    rec.convertedPath = applyPath(rec.convertedPath, mv);
+    rec.originalPath = applyPath(rec.originalPath, mv);
+    rec.archivePath = applyPath(rec.archivePath, mv);
+  }
+  if (rec.convertedPath) rec.convertedName = path.basename(rec.convertedPath);
+  const origExt = rec.originalExtension
+    || path.extname(rec.originalName || rec.capturedName || '')
+    || '.mov';
+  rec.originalName = `${newBase}${origExt}`;
+  rec.originalExtension = origExt;
+  const libraryDirOf = (p) => {
+    if (!p) return dir;
+    const parent = path.dirname(p);
+    return path.basename(parent) === 'archive' ? path.dirname(parent) : parent;
+  };
+  rec.originalPath = path.join(libraryDirOf(rec.originalPath || rec.archivePath), rec.originalName);
+  rec.displayName = rec.convertedName || rec.originalName;
+  rec.name = rec.displayName;
+
+  let thumbRel = rec.thumbnail;
+  for (const mv of planned) {
+    const nextThumb = await renameThumbForVideo(dir, mv.from, mv.to);
+    if (nextThumb) thumbRel = nextThumb;
+  }
+  if (thumbRel) rec.thumbnail = thumbRel;
+
+  store.records[key] = rec;
+  await writeScanStore(dir, store);
+  return { key, rec, moves: planned };
 }
 
 async function attachToListing(files, store) {
@@ -233,6 +404,8 @@ async function attachToListing(files, store) {
       suggestConversion: rec?.suggestConversion,
       originalSize: rec?.originalSize ?? file.size,
       originalPath: rec?.originalPath,
+      capturedName: rec?.capturedName,
+      displayName: rec?.displayName,
       originalName: rec?.originalName,
       archivePath: rec?.archivePath,
       convertedPath: rec?.convertedPath,
@@ -248,29 +421,38 @@ async function attachToListing(files, store) {
 }
 
 function findExactRecordKey(store, file) {
-  const records = store.records || {};
+  return findRecordKey(store, file);
+}
+
+function isConvertedListing(file, rec) {
+  if (!rec) return false;
   const p = file.path;
-  if (file.name && records[file.name]) return file.name;
-  for (const [key, rec] of Object.entries(records)) {
-    if (rec.originalPath === p || rec.convertedPath === p) return key;
-  }
-  return null;
+  if (rec.convertedPath && p && path.resolve(rec.convertedPath) === path.resolve(p)) return true;
+  if (rec.convertedName && file.name && rec.convertedName === file.name) return true;
+  const ext = String(file.extension || path.extname(file.name || '')).toLowerCase();
+  if (ext !== '.mp4' && ext !== '.m4v') return false;
+  if (rec.originalPath && p && path.resolve(rec.originalPath) === path.resolve(p)) return false;
+  if (rec.originalName && rec.originalName !== file.name && groupStem(rec.originalName) === groupStem(file.name)) return true;
+  const origExt = String(rec.originalExtension || path.extname(rec.originalName || rec.capturedName || '')).toLowerCase();
+  return origExt === '.mov';
+}
+
+function hasProbeData(rec) {
+  return rec && (rec.width != null || rec.duration != null || rec.rotation != null);
 }
 
 function needsProbe(file, store) {
-  const key = findExactRecordKey(store, file);
+  const key = findRecordKey(store, file);
   if (!key) return true;
   const rec = store.records[key];
-  if (!rec) return true;
-  if (rec.scanError) return true;
-  const listingConverted = rec.convertedPath === file.path || rec.convertedName === file.name;
-  if (listingConverted) {
+  if (!rec || rec.scanError) return true;
+  if (!hasProbeData(rec)) return true;
+  if (isConvertedListing(file, rec)) {
     if (file.size != null && rec.convertedSize != null && Number(file.size) !== Number(rec.convertedSize)) return true;
     return false;
   }
-  if (rec.sourceMtimeMs == null) return true;
-  if (Number(file.mtimeMs) !== Number(rec.sourceMtimeMs)) return true;
   if (file.size != null && rec.originalSize != null && Number(file.size) !== Number(rec.originalSize)) return true;
+  if (file.mtimeMs != null && rec.sourceMtimeMs != null && Math.abs(Number(file.mtimeMs) - Number(rec.sourceMtimeMs)) >= 2000) return true;
   return false;
 }
 
@@ -288,7 +470,7 @@ function hydrateFromStore(file, rec) {
     suggestConversion: !!rec.suggestConversion,
     status: rec.scanError ? 'error' : 'idle',
     error: rec.scanError || undefined,
-    analyzed: !rec.scanError,
+    analyzed: !rec.scanError && (rec.width != null || rec.duration != null || rec.rotation != null),
     thumbnail: rec.thumbnail || null,
     hasThumbnail: false,
     thumbnailUrl: null
@@ -307,10 +489,10 @@ async function attachThumbnailState(file, dir) {
 }
 
 function needsThumbnail(file, store) {
-  const key = findExactRecordKey(store, file);
+  const key = findRecordKey(store, file);
   const rec = key ? store.records[key] : null;
   if (!rec || !rec.thumbnail) return true;
-  if (file.mtimeMs != null && rec.thumbnailSourceMtimeMs != null && Number(file.mtimeMs) !== Number(rec.thumbnailSourceMtimeMs)) {
+  if (file.mtimeMs != null && rec.thumbnailSourceMtimeMs != null && Math.abs(Number(file.mtimeMs) - Number(rec.thumbnailSourceMtimeMs)) >= 2000) {
     return true;
   }
   return false;
@@ -318,7 +500,7 @@ function needsThumbnail(file, store) {
 
 async function markThumbnail(dir, file, relPath) {
   const store = await readScanStore(dir);
-  const key = file.name;
+  const key = findRecordKey(store, file) || file.name;
   const rec = store.records[key] || recordFromProbe(file);
   store.records[key] = {
     ...rec,
@@ -376,22 +558,32 @@ async function groupListing(files, store, dir) {
   }
 
   const groups = [];
-  const seenStems = new Set();
+  const seenGroups = new Set();
 
   for (const file of files) {
-    const g = groupStem(file.name);
-    if (seenStems.has(g)) continue;
-    seenStems.add(g);
-    const bucket = byStem.get(g) || { files: [] };
-    const recKey = findRecordKey(store, file) || Object.keys(store.records || {}).find((k) => groupStem(k) === g);
+    const recKey = findRecordKey(store, file) || Object.keys(store.records || {}).find((k) => groupStem(k) === groupStem(file.name));
+    const groupId = recKey ? `rec:${recKey}` : `stem:${groupStem(file.name)}`;
+    if (seenGroups.has(groupId)) continue;
+    seenGroups.add(groupId);
     const rec = recKey ? store.records[recKey] : null;
+    const bucket = byStem.get(groupStem(file.name)) || { files: [] };
+
+    const listing = files.filter((f) => {
+      const k = findRecordKey(store, f);
+      if (recKey) return k === recKey;
+      return !findRecordKey(store, f) && groupStem(f.name) === groupStem(file.name);
+    });
 
     const members = [];
-    const listing = files.filter((f) => groupStem(f.name) === g);
     for (const f of listing) {
       const ext = path.extname(f.name).toLowerCase();
       const role = ext === '.mov' ? 'original' : (rec && rec.convertedName === f.name ? 'converted' : (ext === '.mp4' || ext === '.m4v' ? 'converted' : 'original'));
       members.push(member(role, f.name, f.path, f.size));
+    }
+    if (rec?.convertedPath && await fileExists(rec.convertedPath) && !members.some((m) => m.path === rec.convertedPath)) {
+      let cSize = rec.convertedSize || 0;
+      try { cSize = (await fs.stat(rec.convertedPath)).size; } catch { /* keep */ }
+      members.push(member('converted', path.basename(rec.convertedPath), rec.convertedPath, cSize));
     }
     if (rec?.archivePath && await fileExists(rec.archivePath) && !members.some((m) => m.path === rec.archivePath)) {
       let aSize = rec.originalSize || 0;
@@ -410,13 +602,17 @@ async function groupListing(files, store, dir) {
     const originalMember = members.find((m) => m.role === 'original');
     const convertedMember = members.find((m) => m.role === 'converted');
     const archiveMember = members.find((m) => m.role === 'archive');
-    const primary = originalMember || convertedMember || members[0];
+    const primary = convertedMember || originalMember || members[0];
+    const displayName = rec?.displayName || primary?.name || file.name;
+    const capturedName = rec?.capturedName || rec?.originalName || null;
 
     groups.push({
-      key: g,
+      key: recKey || groupStem(file.name),
       id: rec?.id || null,
       recordKey: recKey || (originalMember ? originalMember.name : file.name),
-      name: rec?.originalName || primary?.name || file.name,
+      name: displayName,
+      displayName,
+      capturedName,
       path: primary?.path || file.path,
       size: primary?.size || file.size,
       scanned: !!rec && !rec.scanError,
@@ -433,12 +629,13 @@ async function groupListing(files, store, dir) {
       originalName: rec?.originalName || originalMember?.name,
       archivePath: archiveMember?.path || rec?.archivePath,
       convertedPath: convertedMember?.path || rec?.convertedPath,
+      convertedName: convertedMember?.name || rec?.convertedName,
       convertedSize: convertedMember?.size || rec?.convertedSize,
       canRestore: !!archiveMember && !(originalMember && originalMember.path && !String(originalMember.path).includes(`${path.sep}archive${path.sep}`)),
       canDeleteArchive: !!archiveMember && !!convertedMember && (convertedMember.size || 0) > 1024,
       canProcess: !!originalMember && extIsVideoOriginal(originalMember.name) && rec && (rec.suggestRotation || rec.suggestOptimization || rec.suggestConversion) && rec.processStatus !== 'completed',
       convertedPresent: !!convertedMember,
-      hasThumbnail: listing.some((f) => f.hasThumbnail),
+      hasThumbnail: listing.some((f) => f.hasThumbnail) || !!rec?.thumbnail,
       processStatus: rec?.processStatus,
       lastScannedAt: rec?.lastScannedAt,
       scanError: rec?.scanError || null,
@@ -478,7 +675,7 @@ function getRecord(store, recordKey) {
   if (store.records[recordKey]) return { key: recordKey, rec: store.records[recordKey] };
   const wanted = groupStem(recordKey);
   for (const [key, rec] of Object.entries(store.records || {})) {
-    if (groupStem(key) === wanted || groupStem(rec.originalName) === wanted || groupStem(rec.convertedName) === wanted) {
+    if (groupStem(key) === wanted || groupStem(rec.originalName) === wanted || groupStem(rec.convertedName) === wanted || groupStem(rec.capturedName) === wanted || groupStem(rec.displayName) === wanted) {
       return { key, rec };
     }
   }
@@ -531,5 +728,6 @@ module.exports = {
   attachThumbnailState,
   needsThumbnail,
   markThumbnail,
-  vidorientDir
+  vidorientDir,
+  renameRecordFiles
 };

@@ -34,4 +34,4 @@ Capture user needs and goals for VidOrient in implementation-neutral language. V
 | URD-019 | Restore an archived original, optionally removing the converted copy only after the original is back | Recovery must not race with deletion. |
 | URD-020 | Never destroy an original unless a converted playback file is present and proven good | Includes archive-after-process and deleting an archive later. |
 | URD-022 | Open a specific original, converted, or archived file in the desktop file browser or a quick preview | From the listing, without hunting for the path by hand. |
-| URD-023 | See how much smaller a converted file is than the original, and how much space that saved, even after the original is gone | Percent smaller and bytes saved should remain after archive delete. |
+| URD-025 | Reopen the last folder this operator was browsing when they return to the app | Per person on this machine; not a shared hardcoded library path. |

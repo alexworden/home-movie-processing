@@ -55,7 +55,7 @@ const {
   findExactRecordKey, needsProbe, hydrateFromStore,
   attachThumbnailState, needsThumbnail, markThumbnail,
   thumbnailAbs, thumbnailRel, thumbnailUrlPath, fileExists, VIDORIENT_DIR,
-  groupListedFiles, getRecord, markProcessed
+  groupListedFiles, getRecord, markProcessed, renameRecordFiles
 } = require('./scanStore');
 
 const app = express();
@@ -141,8 +141,7 @@ function drainThumbs() {
 async function generateThumbnail(file) {
   const dir = path.dirname(file.path);
   const dest = thumbnailAbs(dir, file.name);
-  const store = await readScanStore(dir);
-  if (!needsThumbnail(file, store) && await fileExists(dest)) return;
+  if (await fileExists(dest)) return;
   await fs.mkdir(path.dirname(dest), { recursive: true });
   await extractThumbnail(file.path, dest);
   await markThumbnail(dir, file, thumbnailRel(file.name));
@@ -516,6 +515,54 @@ app.post('/api/process', async (req, res) => {
   processQueue();
 
   res.json(jobs[fileId]);
+});
+
+app.post('/api/rename', async (req, res) => {
+  const folder = sanitizeUserPath(String(req.body?.folder || ''));
+  const recordKey = req.body?.recordKey;
+  const name = req.body?.name;
+  if (!folder || !recordKey) return res.status(400).json({ error: 'folder and recordKey are required' });
+
+  const fileId = req.body?.fileId;
+  if (fileId && jobs[fileId] && (jobs[fileId].status === 'queued' || jobs[fileId].status === 'processing')) {
+    return res.status(409).json({ error: 'Cannot rename a file while it is processing' });
+  }
+
+  try {
+    const result = await renameRecordFiles(folder, recordKey, name, {
+      name: req.body?.currentName,
+      path: req.body?.path ? sanitizeUserPath(String(req.body.path)) : null,
+      members: Array.isArray(req.body?.members) ? req.body.members : []
+    });
+
+    const recId = result.rec.id;
+    for (const file of scanResults) {
+      if (file.id !== recId && file.name !== recordKey) continue;
+      for (const mv of result.moves) {
+        if (file.path && path.resolve(file.path) === path.resolve(mv.from)) {
+          file.path = mv.to;
+          file.name = path.basename(mv.to);
+        }
+      }
+    }
+
+    res.json({
+      ok: true,
+      recordKey: result.key,
+      displayName: result.rec.displayName,
+      capturedName: result.rec.capturedName,
+      originalName: result.rec.originalName,
+      convertedName: result.rec.convertedName,
+      convertedPath: result.rec.convertedPath,
+      originalPath: result.rec.originalPath,
+      archivePath: result.rec.archivePath,
+      moves: result.moves
+    });
+  } catch (err) {
+    const status = err.status || (err.code === 'ENOENT' ? 404 : 500);
+    if (status >= 500) console.error('[Rename]', err);
+    res.status(status).json({ error: err.message });
+  }
 });
 
 app.post('/api/restore', async (req, res) => {
