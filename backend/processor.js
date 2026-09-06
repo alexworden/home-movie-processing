@@ -43,11 +43,12 @@ async function scanDirectory(dir, root = dir, recursive = true) {
                 // Get basic file stats
                 const stats = await fs.stat(fullPath);
                 results.push({
-                    id: crypto.randomUUID(), // Unique ID for tracking in the UI
+                    id: crypto.randomUUID(),
                     name: file.name,
                     path: fullPath,
                     relativePath: path.relative(root, fullPath),
                     size: stats.size,
+                    mtimeMs: stats.mtimeMs,
                     extension: ext
                 });
             }
@@ -214,6 +215,24 @@ function processVideo(inputPath, outputPath, options, onProgress) {
         // We want to manually apply rotation and remove metadata for maximum compatibility.
         command.inputOptions('-noautorotate');
 
+        const remuxOnly = options.convert && !options.fixRotation && !options.optimize;
+
+        if (remuxOnly) {
+            console.log('Remuxing to MP4 without re-encode (convert only)');
+            command
+                .videoCodec('copy')
+                .audioCodec('copy')
+                .format('mp4')
+                .outputOptions('-movflags', '+faststart')
+                .on('progress', (progress) => {
+                    if (onProgress) onProgress(progress.percent);
+                })
+                .on('end', () => resolve())
+                .on('error', (err) => reject(err))
+                .save(outputPath);
+            return;
+        }
+
         // If we need to fix rotation, apply transpose filter based on detected rotation.
         // The rotation value tells us how much to rotate clockwise to fix the orientation.
         if (options.fixRotation && options.rotation !== 0) {
@@ -255,17 +274,18 @@ function processVideo(inputPath, outputPath, options, onProgress) {
             console.log('Converting file to MP4 (no rotation needed)');
         }
 
-        // Optimization settings:
-        // - libx264 is high quality and very compatible.
-        // - crf 20 is "near visually lossless" but efficient.
-        // - preset slow ensures better compression at the cost of time.
+        // H.264 8-bit: Shield/Plex-friendly. CRF 26 when optimizing (a bit more quality than 28);
+        // CRF 23 for rotation/other re-encodes. Convert-only remuxes above (no re-encode).
+        const crf = options.optimize ? '26' : '23';
+        console.log(`Encoding libx264 crf=${crf} pix_fmt=yuv420p optimize=${!!options.optimize}`);
         command
             .videoCodec('libx264')
-            .addOption('-crf', '20')
-            .addOption('-preset', 'slow')
-            .audioCodec('copy') // Preserve original audio quality
+            .addOption('-crf', crf)
+            .addOption('-preset', 'medium')
+            .outputOptions('-pix_fmt', 'yuv420p')
+            .audioCodec('copy')
             .format('mp4')
-            .outputOptions('-movflags', '+faststart') // Better for web/Plex streaming
+            .outputOptions('-movflags', '+faststart')
             .on('progress', (progress) => {
                 if (onProgress) onProgress(progress.percent);
             })
@@ -297,11 +317,83 @@ async function listContent(dir) {
             return {
                 name: item.name,
                 path: fullPath,
-                size: stats.size
+                size: stats.size,
+                mtimeMs: stats.mtimeMs,
+                relativePath: item.name,
+                extension: path.extname(item.name).toLowerCase()
             };
         }));
 
     return { subdirs, files };
+}
+
+async function fileRecordFromPath(fullPath, rootDir) {
+    const ext = path.extname(fullPath).toLowerCase();
+    if (!VIDEO_EXTS.has(ext)) {
+        throw new Error(`Unsupported file type: ${path.basename(fullPath)}`);
+    }
+    const stats = await fs.stat(fullPath);
+    if (!stats.isFile()) {
+        throw new Error(`Not a file: ${fullPath}`);
+    }
+    const root = rootDir || path.dirname(fullPath);
+    return {
+        id: crypto.randomUUID(),
+        name: path.basename(fullPath),
+        path: fullPath,
+        relativePath: path.relative(root, fullPath) || path.basename(fullPath),
+        size: stats.size,
+        mtimeMs: stats.mtimeMs,
+        extension: ext
+    };
+}
+
+/**
+ * Confirm a path is a real video before we move or delete any original/archive.
+ * Duration must stay close to the source when that is known, so a truncated encode cannot replace it.
+ */
+async function assertPlayableVideo(filePath, { expectedDuration } = {}) {
+    const stats = await fs.stat(filePath);
+    if (!stats.isFile()) {
+        throw new Error(`Not a file: ${filePath}`);
+    }
+    if (stats.size < 1024) {
+        throw new Error(`File is too small to be a valid video (${stats.size} bytes): ${filePath}`);
+    }
+    const meta = await probeVideo(filePath);
+    if (expectedDuration && meta.duration) {
+        const delta = Math.abs(meta.duration - expectedDuration);
+        if (delta > Math.max(2, expectedDuration * 0.05)) {
+            throw new Error(
+                `Converted duration (${Math.round(meta.duration)}s) does not match original (${Math.round(expectedDuration)}s)`
+            );
+        }
+    }
+    return { size: stats.size, meta };
+}
+
+function extractThumbnail(inputPath, outputPath) {
+    return new Promise((resolve, reject) => {
+        const run = (seekSeconds) => {
+            ffmpeg(inputPath)
+                .outputOptions([
+                    '-ss', String(seekSeconds),
+                    '-vframes', '1',
+                    '-vf', 'scale=320:-2'
+                ])
+                .output(outputPath)
+                .on('end', () => resolve(outputPath))
+                .on('error', (err) => {
+                    if (seekSeconds > 0) {
+                        run(0);
+                        return;
+                    }
+                    reject(err);
+                })
+                .run();
+        };
+        run(1);
+    });
 }
 
 module.exports = {
@@ -309,5 +401,8 @@ module.exports = {
     probeVideo,
     processVideo,
     listContent,
+    fileRecordFromPath,
+    assertPlayableVideo,
+    extractThumbnail,
     ARCHIVE_DIR
 };

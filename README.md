@@ -8,6 +8,20 @@ This project consists of:
 - **Backend**: Express.js server that handles video scanning, metadata extraction, and video processing using FFmpeg
 - **Frontend**: React application with Vite that provides a user-friendly interface for browsing directories, analyzing videos, and managing processing jobs
 
+## Product docs
+
+Controlled requirements and design live under [`Docs/`](./Docs/README.md):
+
+| Doc | Path |
+| --- | --- |
+| Map (when to read) | [`Docs/README.md`](./Docs/README.md) |
+| User requirements (URD) | [`Docs/Requirements/URD.md`](./Docs/Requirements/URD.md) |
+| Product requirements (PRD) | [`Docs/Requirements/PRD.md`](./Docs/Requirements/PRD.md) |
+| Technical design (TDD) | [`Docs/TechDesign/TDD.md`](./Docs/TechDesign/TDD.md) |
+| UI style guide | [`Docs/app-style-guide.md`](./Docs/app-style-guide.md) |
+
+This README remains the operator guide (install, run, debug). Prefer the Docs tree for product behavior and API contracts when changing features.
+
 ## Features
 
 - **Directory Scanning**: Recursively scans directories for video files (MP4, MOV, M4V)
@@ -93,6 +107,7 @@ Once both services are running:
 
 ```
 home-movie-processing/
+├── Docs/                  # Controlled product docs (URD / PRD / TDD / style)
 ├── backend/
 │   ├── server.js          # Express server and API endpoints
 │   ├── processor.js       # Video processing logic (FFmpeg operations)
@@ -101,16 +116,16 @@ home-movie-processing/
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx        # Main React component
-│   │   ├── App.css        # Application styles
+│   │   ├── App.css        # Unused/stale styles (prefer index.css)
 │   │   ├── main.jsx       # React entry point
-│   │   └── index.css      # Global styles
+│   │   └── index.css      # Global styles (authoritative)
 │   ├── public/            # Static assets
 │   ├── package.json       # Frontend dependencies
 │   ├── vite.config.js     # Vite configuration
 │   └── node_modules/      # Frontend dependencies (generated)
 ├── package.json           # Root package.json with start scripts
 ├── setup.sh              # Setup script for dependencies
-└── README.md             # This file
+└── README.md             # Operator guide (this file)
 ```
 
 ## API Endpoints
