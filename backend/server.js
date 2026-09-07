@@ -55,7 +55,7 @@ const {
   findExactRecordKey, needsProbe, hydrateFromStore,
   attachThumbnailState, needsThumbnail, markThumbnail,
   thumbnailAbs, thumbnailRel, thumbnailUrlPath, fileExists, VIDORIENT_DIR,
-  groupListedFiles, getRecord, markProcessed, renameRecordFiles
+  groupListedFiles, getRecord, markProcessed, renameRecordFiles, storeDirForVideo
 } = require('./scanStore');
 
 const app = express();
@@ -63,7 +63,7 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors()); // Allow frontend to talk to backend
-app.use(express.json()); // Support JSON request bodies
+app.use(express.json({ limit: '10mb' }));
 app.use(morgan('dev')); // Log requests for easy debugging
 
 // In-memory store for active jobs and scan results
@@ -99,7 +99,7 @@ async function attachCachedMeta(files) {
   const stores = new Map();
   const out = [];
   for (const file of files) {
-    const dir = path.dirname(file.path);
+    const dir = storeDirForVideo(file.path);
     if (!stores.has(dir)) stores.set(dir, await readScanStore(dir));
     const store = stores.get(dir);
     const key = findExactRecordKey(store, file);
@@ -139,7 +139,7 @@ function drainThumbs() {
 }
 
 async function generateThumbnail(file) {
-  const dir = path.dirname(file.path);
+  const dir = storeDirForVideo(file.path);
   const dest = thumbnailAbs(dir, file.name);
   if (await fileExists(dest)) return;
   await fs.mkdir(path.dirname(dest), { recursive: true });
@@ -197,7 +197,7 @@ async function probeFileList(files, { generation } = {}) {
 async function persistProbes(probedFiles) {
   const byDir = new Map();
   for (const file of probedFiles) {
-    const dir = path.dirname(file.path);
+    const dir = storeDirForVideo(file.path);
     if (!byDir.has(dir)) byDir.set(dir, []);
     byDir.get(dir).push(file);
   }
@@ -213,7 +213,7 @@ async function enrichFromCacheOrProbe(files, { force = false, generation } = {})
   const ready = [];
   const toProbe = [];
   for (const file of files) {
-    const dir = path.dirname(file.path);
+    const dir = storeDirForVideo(file.path);
     if (!stores.has(dir)) stores.set(dir, await readScanStore(dir));
     const store = stores.get(dir);
     if (!force && !needsProbe(file, store)) {
@@ -260,7 +260,7 @@ function processQueue() {
         jobs[fileId].status = 'completed';
         jobs[fileId].progress = 100;
 
-        const fileDir = path.dirname(file.path);
+        const fileDir = storeDirForVideo(file.path);
         if (file.extension && file.extension.toLowerCase() === '.mov') {
           try {
             const archiveDir = path.join(fileDir, ARCHIVE_DIR);
@@ -425,7 +425,7 @@ app.post('/api/open', async (req, res) => {
 app.get('/api/thumbnail', async (req, res) => {
   const videoPath = sanitizeUserPath(String(req.query.file || ''));
   if (!videoPath) return res.status(400).json({ error: 'file is required' });
-  const dir = path.dirname(videoPath);
+  const dir = storeDirForVideo(videoPath);
   const abs = path.resolve(thumbnailAbs(dir, path.basename(videoPath)));
   const thumbsRoot = path.resolve(path.join(dir, VIDORIENT_DIR, 'thumbs')) + path.sep;
   if (!abs.startsWith(thumbsRoot) && abs !== thumbsRoot.slice(0, -1)) {
@@ -447,7 +447,7 @@ app.post('/api/thumbs/status', async (req, res) => {
   const out = {};
   for (const raw of paths) {
     const videoPath = sanitizeUserPath(String(raw));
-    const dir = path.dirname(videoPath);
+    const dir = storeDirForVideo(videoPath);
     const ready = await fileExists(thumbnailAbs(dir, path.basename(videoPath)));
     out[videoPath] = {
       ready,
