@@ -6,6 +6,7 @@ const SCAN_DOTFILE = '.vidorient.json';
 const VIDORIENT_DIR = '.vidorient';
 const METADATA_FILE = 'metadata.json';
 const THUMBS_SUBDIR = 'thumbs';
+const ARCHIVE_DIR_NAME = 'archive';
 
 function emptyStore() {
   return { version: 2, updatedAt: new Date().toISOString(), records: {} };
@@ -13,6 +14,14 @@ function emptyStore() {
 
 function vidorientDir(dir) {
   return path.join(dir, VIDORIENT_DIR);
+}
+
+/** Folder that owns `.vidorient/` for this video (never the recursive browse root). */
+function storeDirForVideo(videoPath) {
+  if (!videoPath) return null;
+  const parent = path.dirname(videoPath);
+  if (path.basename(parent) === ARCHIVE_DIR_NAME) return path.dirname(parent);
+  return parent;
 }
 
 function metadataPath(dir) {
@@ -361,11 +370,7 @@ async function renameRecordFiles(dir, recordKey, rawName, hint) {
     || '.mov';
   rec.originalName = `${newBase}${origExt}`;
   rec.originalExtension = origExt;
-  const libraryDirOf = (p) => {
-    if (!p) return dir;
-    const parent = path.dirname(p);
-    return path.basename(parent) === 'archive' ? path.dirname(parent) : parent;
-  };
+  const libraryDirOf = (p) => (p ? storeDirForVideo(p) : dir);
   rec.originalPath = path.join(libraryDirOf(rec.originalPath || rec.archivePath), rec.originalName);
   rec.displayName = rec.convertedName || rec.originalName;
   rec.name = rec.displayName;
@@ -650,7 +655,7 @@ async function groupListing(files, store, dir) {
 async function groupListedFiles(files) {
   const byDir = new Map();
   for (const file of files) {
-    const dir = path.dirname(file.path);
+    const dir = storeDirForVideo(file.path);
     if (!byDir.has(dir)) byDir.set(dir, []);
     byDir.get(dir).push(file);
   }
@@ -729,5 +734,6 @@ module.exports = {
   needsThumbnail,
   markThumbnail,
   vidorientDir,
+  storeDirForVideo,
   renameRecordFiles
 };

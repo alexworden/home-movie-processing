@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { CheckCircle, Loader2, Folder, X, Home, ArrowUp, Video, ChevronUp, ChevronDown, Star, Play, Pencil } from 'lucide-react';
 
 const API_BASE = 'http://localhost:3001/api';
+const SCAN_PATH_CHUNK = 200;
 const FAVORITES_KEY = 'vidorient.favorites';
 const LAST_FOLDER_KEY = 'vidorient.lastFolder';
 const VOLUMES_PATH = '/Volumes';
@@ -142,6 +143,24 @@ function sizeSavings(file) {
 function scanPayload(data) {
   if (Array.isArray(data)) return { aborted: false, files: data };
   return { aborted: !!data?.aborted, files: data?.files || [] };
+}
+
+async function postPathChunks(url, paths, extra, signal) {
+  const merged = [];
+  for (let i = 0; i < paths.length; i += SCAN_PATH_CHUNK) {
+    const chunk = paths.slice(i, i + SCAN_PATH_CHUNK);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...extra, paths: chunk }),
+      signal
+    });
+    if (!res.ok) return { ok: false, files: merged, aborted: false };
+    const payload = scanPayload(await res.json());
+    merged.push(...(payload.files || []));
+    if (payload.aborted) return { ok: true, files: merged, aborted: true };
+  }
+  return { ok: true, files: merged, aborted: false };
 }
 
 function normalizeFolderPath(p) {
@@ -523,20 +542,18 @@ function App() {
       }
 
       setScanning(true);
-      const scanRes = await fetch(`${API_BASE}/scan/files`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths, rootFolder: path, force }),
-        signal: ac.signal
-      });
+      const scan = await postPathChunks(
+        `${API_BASE}/scan/files`,
+        paths,
+        { rootFolder: path, force },
+        ac.signal
+      );
       if (seq !== openSeqRef.current) return;
-      if (!scanRes.ok) return;
-      const payload = scanPayload(await scanRes.json());
-      if (seq !== openSeqRef.current || payload.aborted) return;
+      if (!scan.ok || scan.aborted) return;
       setBrowseData((prev) => ({
         ...prev,
-        files: mergeFilesByPath(prev.files, payload.files),
-        groups: applyScanToGroups(prev.groups, payload.files)
+        files: mergeFilesByPath(prev.files, scan.files),
+        groups: applyScanToGroups(prev.groups, scan.files)
       }));
     } catch (err) {
       if (err.name === 'AbortError') return;
@@ -606,13 +623,17 @@ function App() {
     const paths = missingThumbKey.split('|').filter(Boolean);
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/thumbs/status`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ paths })
-        });
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = {};
+        for (let i = 0; i < paths.length; i += SCAN_PATH_CHUNK) {
+          const chunk = paths.slice(i, i + SCAN_PATH_CHUNK);
+          const res = await fetch(`${API_BASE}/thumbs/status`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths: chunk })
+          });
+          if (!res.ok) return;
+          Object.assign(data, await res.json());
+        }
         setFailedThumbs((prev) => {
           let changed = false;
           const next = new Set(prev);
