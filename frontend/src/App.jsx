@@ -445,6 +445,7 @@ function App() {
   const [customFavorites, setCustomFavorites] = useState(loadCustomFavorites);
   const [failedThumbs, setFailedThumbs] = useState(() => new Set());
   const [fileRoleMenuId, setFileRoleMenuId] = useState(null);
+  const [renamingKey, setRenamingKey] = useState(null);
   const [listOrderKeys, setListOrderKeys] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const renameBusyRef = useRef(false);
